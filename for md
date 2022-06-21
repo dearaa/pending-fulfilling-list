@@ -1,0 +1,455 @@
+SELECT
+	orderid,
+	skuid,
+	skuname,
+	categoryid,
+	categoryname,
+	merchandiserid,
+	CASE
+		WHEN mdname IS NULL
+		THEN 'Not Yet Identified'
+		ELSE mdname
+	END AS mdname,
+	CASE
+		WHEN mdhead IS NULL
+		THEN 'Not Yet Identified'
+		ELSE mdhead
+	END AS mdhead,
+	business_model,
+	store_id,
+	store_name,
+	delv_center_id,
+	delv_center_name,
+	warehouse_stock_status,
+	COALESCE(SUM(1until3days), 0) 1until3days,
+	COALESCE(SUM(4until7days), 0) 4until7days,
+	COALESCE(SUM(8until14days), 0) 8until14days,
+	COALESCE(SUM(15until21days), 0) 15until21days,
+	COALESCE(SUM(22until30days), 0) 22until30days,
+	COALESCE(SUM(above30days), 0) above30days,
+	COALESCE(SUM(total), 0) total,
+	COALESCE(SUM(usable_stock), 0) usable_stock
+FROM
+	(
+		SELECT DISTINCT
+			ord.ord_id AS orderId,
+			ord.sku_id AS skuId,
+			ord.sku_name AS skuName,
+			ord.cat_lvl3_id AS categoryId,
+			ord.cat_lvl3_name_en AS categoryName,
+			skuda.purchaser_erp_acct AS merchandiserId,
+			md.md_name AS mdname,
+			md.md_director AS mdhead,
+			ord.business_model,
+			ord.store_id,
+			st.store_name,
+			ord.delv_center_id,
+			st.delv_center_name,
+			CASE
+				WHEN stt.usable_stock < 1
+					AND stt.presell_num < 1
+				THEN 'OOS'
+				WHEN stt.presell_num > 0
+				THEN 'Presale'
+				WHEN st.delv_center_name IS NULL
+				THEN 'No Warehouse'
+				ELSE 'Stock Available'
+			END AS warehouse_stock_status,
+			CASE
+				WHEN ord.book_dt >= sysdate( - 3)
+				THEN ord.total_sales_qty
+			END AS 1until3days,
+			CASE
+				WHEN ord.book_dt >= sysdate( - 7)
+					AND ord.book_dt < sysdate( - 3)
+				THEN ord.total_sales_qty
+			END AS 4until7days,
+			CASE
+				WHEN ord.book_dt >= sysdate( - 14)
+					AND ord.book_dt < sysdate( - 7)
+				THEN ord.total_sales_qty
+			END AS 8until14days,
+			CASE
+				WHEN ord.book_dt >= sysdate( - 21)
+					AND ord.book_dt < sysdate( - 14)
+				THEN ord.total_sales_qty
+			END AS 15until21days,
+			CASE
+				WHEN ord.book_dt >= sysdate( - 30)
+					AND ord.book_dt < sysdate( - 21)
+				THEN ord.total_sales_qty
+			END AS 22until30days,
+			CASE
+				WHEN ord.book_dt < sysdate( - 30)
+				THEN ord.total_sales_qty
+			END AS above30days,
+			ord.total_sales_qty AS total,
+			stt.usable_stock
+		FROM
+			(
+				SELECT DISTINCT
+					ord_id,
+					sku_id,
+					skuda.sku_name,
+					cat_lvl1_id,
+					skuda.item_first_cate_name_en cat_lvl1_name_en,
+					cat_lvl2_id,
+					skuda.item_second_cate_name_en cat_lvl2_name_en,
+					cat_lvl3_id,
+					skuda.item_third_cate_name_en cat_lvl3_name_en,
+					book_dt,
+					cps.delivery_center_id delv_center_id,
+					business_model,
+					store_id,
+					total_sales_qty,
+					total_gmv
+				FROM
+					(
+						SELECT
+							*
+						FROM
+							(
+								SELECT
+									parent_sale_ord_id parent_ord_id,
+									sale_ord_id ord_id,
+									item_sku_id sku_id,
+									sku_name sku_name,
+									item_first_cate_cd cat_lvl1_id,
+									item_second_cate_cd cat_lvl2_id,
+									item_third_cate_cd cat_lvl3_id,
+									sale_ord_dt book_dt,
+									store_id,
+									CASE
+										WHEN intraday_ord_complete_flag = 1
+										THEN 6
+										WHEN intraday_ord_cancel_flag = 1
+										THEN 99
+										WHEN intraday_ord_deal_flag = 1
+										THEN 1
+										WHEN intraday_ord_valid_flag = 1
+										THEN 1
+									END ord_state,
+									CASE
+										WHEN SUBSTR(ord_flag, 266, 1) = 1
+										THEN 'JD.ID-X'
+										WHEN ord_type_cd = 42
+										THEN 'Contract Phone'
+										WHEN SUBSTR(ord_flag, 73, 1) = 1
+										THEN 'Super Deal'
+										WHEN SUBSTR(ord_flag, 157, 1) = 4
+										THEN 'Fast Delivery Order'
+										WHEN SUBSTR(ord_flag, 80, 1) = 2
+										THEN 'EPT Order'
+										WHEN SUBSTR(ord_flag, 267, 1) = 3
+										THEN 'Basic Free Replacement Order'
+										WHEN SUBSTR(ord_flag, 267, 1) = 4
+										THEN 'Missing Items Order'
+										WHEN SUBSTR(ord_flag, 266, 1) = 3
+										THEN 'JD HUB Order'
+										WHEN SUBSTR(ord_flag, 266, 1) = 4
+										THEN 'Offline Sales Order'
+										WHEN SUBSTR(ord_flag, 10, 1) = 7
+											AND SUBSTR(ord_flag, 206, 1) = 1
+										THEN 'Share Buy Order'
+										WHEN SUBSTR(ord_flag, 271, 1) = 1
+										THEN 'Virtual Market'
+										WHEN SUBSTR(ord_flag, 292, 1) = 3
+										THEN 'O2O'
+										WHEN SUBSTR(ord_flag, 311, 2) = 52
+										THEN 'TikTok'
+										WHEN SUBSTR(ord_flag, 265, 1) = 3
+										THEN 'General Business'
+										ELSE 'Others'
+									END Business_model,
+									CASE
+										WHEN ord_status_cd = 25
+										THEN 'Awaiting Acceptance'
+										WHEN ord_status_cd = 12
+										THEN 'Awaiting for pushdown'
+										WHEN ord_status_cd = 23
+										THEN 'Awaiting packing'
+										WHEN ord_status_cd = 2
+										THEN 'Awaiting Payment'
+										WHEN ord_status_cd = 3
+										THEN 'Awaiting Payment'
+										WHEN ord_status_cd = 21
+										THEN 'Awaiting print'
+										WHEN ord_status_cd = 22
+										THEN 'Awaiting Shipment'
+										WHEN ord_status_cd = 0
+										THEN 'Cancelled'
+										WHEN ord_status_cd = 26
+										THEN 'Delivered'
+										WHEN ord_status_cd = 29
+										THEN 'Delivery returns'
+										WHEN ord_status_cd = 30
+										THEN 'Fulfilled'
+										WHEN ord_status_cd = 130
+										THEN 'Fulfilled'
+										WHEN ord_status_cd = 125
+										THEN 'locked by Awaiting Acceptance'
+										WHEN ord_status_cd = 112
+										THEN 'locked by Awaiting for pushdown'
+										WHEN ord_status_cd = 102
+										THEN 'locked by Awaiting Payment'
+										WHEN ord_status_cd = 103
+										THEN 'locked by Awaiting Payment'
+										WHEN ord_status_cd = 121
+										THEN 'locked by Awaiting print'
+										WHEN ord_status_cd = 122
+										THEN 'locked by Awaiting Shipment'
+										WHEN ord_status_cd = 129
+										THEN 'locked by Delivery returns'
+										WHEN ord_status_cd = 111
+										THEN 'locked by pending'
+										WHEN ord_status_cd = 124
+										THEN 'locked by Ready to ship'
+										WHEN ord_status_cd = 11
+										THEN 'Pending'
+										WHEN ord_status_cd = 24
+										THEN 'Ready to ship'
+									END new_ord_flow,
+									CASE ord_type_cd
+										WHEN 0
+										THEN 'Direct Sales'
+										WHEN 1
+										THEN 'Parent Order'
+										WHEN 18
+										THEN 'Dropship'
+										WHEN 22
+										THEN 'POP Marketplace'
+										WHEN 188
+										THEN 'LS (living service)'
+										WHEN 108
+										THEN 'JD LIFE'
+										WHEN 184
+										THEN 'Top Up'
+										WHEN 186
+										THEN 'Movie'
+										WHEN 183
+										THEN 'Flight'
+										WHEN 185
+										THEN 'Local Hotel'
+										WHEN 190
+										THEN 'International Hotel'
+										WHEN 191
+										THEN 'PLN Electricity Payment'
+										WHEN 187
+										THEN 'Train Ticket'
+										WHEN 192
+										THEN 'Credit card repayment'
+										WHEN 189
+										THEN 'Bus ticket'
+										ELSE 'please check wooy'
+									END AS ord_type_cd,
+									vender_id,
+									rev_addr_city_name_local city,
+									sale_qtty AS total_sales_qty,
+									after_prefr_amt - total_freight_amt AS total_gmv,
+									CASE
+										WHEN pay_mode_cd = 1
+										THEN 'Cash on Delivery'
+										ELSE 'NON COD'
+									END AS pay_metode,
+									dense_rank() over(PARTITION BY sale_ord_id order by dt DESC) AS dt_rank
+								FROM
+									adm.adm_s04_glb_trade_ord_det_sku_snapshot
+								WHERE
+									YEAR(dt) >= 2019
+									AND YEAR(sale_ord_dt) >= 2019
+							)
+							xx
+						WHERE
+							dt_rank = 1
+					)
+					ads
+				LEFT JOIN
+					(
+						SELECT * FROM gdm.gdm_m03_glb_item_sku_da WHERE dt = sysdate( - 1)
+					)
+					skuda
+				ON
+					ads.sku_id = skuda.item_sku_id
+				LEFT JOIN
+					(
+						SELECT
+							order_id,
+							MAX(cps_id) cps_id,
+							MAX(cps_cd) cps_cd,
+							MAX(cps_type) cps_type,
+							MAX(delivery_center_id) delivery_center_id,
+							MAX(cancel_time) cancel_time
+						FROM
+							(
+								SELECT
+									order_id,
+									coupon_code_id cps_id,
+									coupon_code_id cps_cd,
+									coupon_type cps_type,
+									delivery_center_id,
+									cancel_time
+								FROM
+									fdm.fdm_epi_order_order_summary_chain
+								WHERE
+									dp = 'ACTIVE'
+								
+								UNION ALL
+								
+								SELECT
+									sale_ord_id order_id,
+									'' cps_id,
+									'' cps_cd,
+									'' cps_type,
+									delv_center_id delivery_center_id,
+									'' cancel_time
+								FROM
+									gdm.gdm_m09_glb_waybill_forward_basic_sum
+								WHERE
+									dp = 'ACTIVE'
+									AND ship_bill_id NOT LIKE '%RJ%'
+									AND ship_bill_id NOT LIKE '%AF%'
+							)
+							voc
+						GROUP BY
+							order_id
+					)
+					cps
+				ON
+					ads.ord_id = cps.order_id
+				WHERE
+					dt_rank = 1
+					AND book_dt >= '2019-01-01'
+					AND ord_state = 1
+					AND new_ord_flow IN('Awaiting for pushdown', 'Awaiting print', 'locked by Awaiting for pushdown', 'locked by Awaiting print', 'locked by pending', 'Pending')
+					AND ord_id NOT IN(1022268858, 1022268858, 1022268858, 1022268944, 1022269142, 1022269142, 1022269166, 1022269166, 1022276931, 1022276947, 1022277193, 1022277193, 1026734113, 1026734113, 1038882626, 1041240397, 1064695351, 1064749594, 1064755200, 1064762313, 1068805267, 1068807157, 254746724, 254748819, 260808366, 1070359028, 1006286129, 1067465362, 1067468934, 1067820257, 1083128664, 1083142541, 1084266549)
+					AND
+					(
+						ord_type_cd = 'Direct Sales'
+						OR ads.vender_id IN(0, 1)
+					)
+					AND cat_lvl3_id NOT IN(75062092, 75061892, 75060931, 75061987, 75062181, 75063753, 75063774, 75062083)
+					AND ord_type_cd <> 'Parent Order'
+					AND lower(skuda.sku_name) NOT LIKE '%test%'
+					AND lower(item_third_cate_name_en) NOT LIKE '%test%'
+			)
+			ord
+		LEFT JOIN
+			(
+				SELECT
+					store_id,
+					store_name,
+					delv_center_id,
+					delv_center_name
+				FROM
+					dim.dim_store_info
+			)
+			st
+		ON
+			ord.store_id = st.store_id
+			AND ord.delv_center_id = st.delv_center_id
+		LEFT JOIN
+			(
+				SELECT
+					item_sku_id AS sku_id,
+					sku_name,
+					purchaser_erp_acct
+				FROM
+					gdm.gdm_m03_glb_item_sku_da
+				WHERE
+					dt = sysdate( - 1)
+			)
+			skuda
+		ON
+			ord.sku_id = skuda.sku_id
+		LEFT JOIN
+			(
+				SELECT erp, md_name, md_director FROM dev.md_director
+			)
+			md
+		ON
+			md.erp = skuda.purchaser_erp_acct
+		LEFT JOIN
+			(
+				SELECT
+					stk.sku_id,
+					stk.dc_id,
+					stk.sid,
+					COALESCE(prsl.presellnum, 0) AS presell_num,
+					COALESCE(stk.num_stock, 0) + COALESCE(prsl.presellnum, 0) - COALESCE(stk.ord_booking, 0) - COALESCE(stk.ord_transfer, 0) - COALESCE(stk.inner_trans, 0) - COALESCE(stk.app_booking, 0) - COALESCE(stk.trans_out, 0) - COALESCE(stk.no_sale, 0) AS usable_stock
+				FROM
+					(
+						SELECT
+							sku_id,
+							dc_id,
+							sid,
+							SUM(num_stock) AS num_stock,
+							SUM(num_order_booking) AS ord_booking,
+							SUM(num_order_transfer) AS ord_transfer,
+							SUM(num_inner_trans) AS inner_trans,
+							SUM(num_app_booking) AS app_booking,
+							SUM(num_transfer_plan_out) AS trans_out,
+							SUM(num_nosale) AS no_sale
+						FROM
+							fdm.fdm_stock_id_glb_core_stocknum_chain
+						WHERE
+							dp = 'ACTIVE'
+							--AND sid IN(1, 2, 3, 4, 5, 6)
+							--AND dc_id IN(100, 101, 102, 103, 104, 107, 106, 200)
+						GROUP BY
+							sku_id,
+							dc_id,
+							sid
+					)
+					stk
+				LEFT JOIN
+					(
+						SELECT
+							sku_id,
+							sid,
+							dc_id,
+							(SUM(num_reserve) - SUM(num_arrival)) AS presellnum
+						FROM
+							fdm.fdm_stock_id_glb_stocknum_reserve_chain
+						WHERE
+							dp = 'ACTIVE'
+							--AND sid IN(1, 2, 3, 4, 5, 6)
+							--AND dc_id IN(100, 101, 102, 103, 104, 107, 106, 200)
+						GROUP BY
+							sku_id,
+							sid,
+							dc_id
+					)
+					prsl
+				ON
+					stk.sku_id = prsl.sku_id
+					AND stk.sid = prsl.sid
+					AND stk.dc_id = prsl.dc_id
+			)
+			stt ON ord.sku_id = stt.sku_id
+			AND ord.delv_center_id = stt.dc_id
+			AND ord.store_id = stt.sid
+	)
+	rawdata
+GROUP BY
+	orderid,
+	skuid,
+	skuname,
+	categoryid,
+	categoryname,
+	merchandiserid,
+	CASE
+		WHEN mdname IS NULL
+		THEN 'Not Yet Identified'
+		ELSE mdname
+	END,
+	CASE
+		WHEN mdhead IS NULL
+		THEN 'Not Yet Identified'
+		ELSE mdhead
+	END,
+	business_model,
+	store_id,
+	store_name,
+	delv_center_id,
+	delv_center_name,
+	warehouse_stock_status
