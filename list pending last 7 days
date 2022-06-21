@@ -1,0 +1,222 @@
+SELECT
+	ord.parent_ord_id,
+	ord.ord_id AS orderId,
+	po.pre_order_tag,
+	ord.book_dt,
+	ord.sku_id AS skuId,
+	ord.sku_name AS skuName,
+	ord.cat_lvl1_name_en AS category1,
+	ord.cat_lvl2_name_en AS category2,
+	ord.cat_lvl3_name_en AS category3,
+	skuda.purchaser_erp_acct AS MD_Name,
+	st.delv_center_name,
+	CASE
+		WHEN stt.usable_stock < 1
+			AND stt.presell_num < 1
+		THEN 'OOS'
+		WHEN stt.presell_num > 0
+		THEN 'Presale'
+		WHEN st.delv_center_name IS NULL
+		THEN 'No Warehouse'
+		ELSE 'Stock Available'
+	END AS warehouse_stock_status
+FROM
+	(
+		SELECT
+			parent_ord_id,
+			ord_id,
+			sku_id,
+			sku_name,
+			cat_lvl1_id,
+			cat_lvl1_name_en,
+			cat_lvl2_id,
+			cat_lvl2_name_en,
+			cat_lvl3_id,
+			cat_lvl3_name_en,
+			book_dt,
+			delv_center_id,
+			store_id,
+			business_model,
+			SUM(sale_qtty) AS total_sales_qty,
+			SUM(after_prefr_amt) AS total_gmv,
+			CASE
+				WHEN pay_mode = 2
+				THEN 'Cash on Delivery'
+				ELSE 'NON COD'
+			END AS pay_metode
+		FROM
+			tmp.tmp_ord_ord_det wow
+		WHERE
+			book_dt = sysdate( - 7)
+			AND ord_state = 1
+			AND ord_flow IN(4, 9)
+			AND
+			(
+				ord_type_cd = 'Direct Sales'
+				OR best_combo_shop = 1
+			)
+			AND cat_lvl3_id NOT IN(75062092, 75061892, 75060931, 75061987, 75062181, 75063753, 75063774, 75062083)
+		GROUP BY
+			ord_id,
+			parent_ord_id,
+			business_model,
+			sku_id,
+			sku_name,
+			cat_lvl1_id,
+			cat_lvl1_name_en,
+			cat_lvl2_id,
+			CASE
+				WHEN pay_mode = 2
+				THEN 'Cash on Delivery'
+				ELSE 'NON COD'
+			END,
+			cat_lvl2_name_en,
+			cat_lvl3_id,
+			cat_lvl3_name_en,
+			book_dt,
+			delv_center_id,
+			store_id
+	)
+	ord
+LEFT JOIN
+	(
+		SELECT
+			store_id,
+			store_name,
+			delv_center_id,
+			delv_center_name
+		FROM
+			dim.dim_store_info
+	)
+	st
+ON
+	ord.store_id = st.store_id
+	AND ord.delv_center_id = st.delv_center_id
+LEFT JOIN
+	(
+		SELECT
+			order_id,
+			sku_id,
+			delivery_id,
+			store_id,
+			CASE
+				WHEN stock_state = 5
+				THEN 'InStock'
+				WHEN stock_state = 51
+				THEN 'VMIInStock'
+				WHEN stock_state = 19
+				THEN 'PreSaleBook'
+				WHEN stock_state = 15
+				THEN 'JDI Warehouse'
+				WHEN stock_state = 16
+				THEN 'On The Way'
+				WHEN stock_state = 40
+				THEN 'Available for Distribution'
+				WHEN stock_state = 50
+				THEN 'Presale B2B'
+				WHEN stock_state = 17
+				THEN 'Scheduled'
+				WHEN stock_state = 18
+				THEN 'OOS'
+				ELSE 'No inventory information'
+			END AS order_stock_status
+		FROM
+			fdm.fdm_ofm_poc_order_detail_chain
+		WHERE
+			dp = "ACTIVE"
+	)
+	ss
+ON
+	ord.ord_id = ss.order_id
+	AND ord.sku_id = ss.sku_id
+	AND ord.delv_center_id = ss.delivery_id
+	AND ord.store_id = ss.store_id
+LEFT JOIN
+	(
+		SELECT
+			item_sku_id AS sku_id,
+			sku_name,
+			purchaser_erp_acct
+		FROM
+			gdm.gdm_m03_glb_item_sku_da
+		WHERE
+			dt = sysdate( - 1)
+	)
+	skuda
+ON
+	ord.sku_id = skuda.sku_id
+LEFT JOIN
+	(
+		SELECT
+			stk.sku_id,
+			stk.dc_id,
+			stk.sid,
+			COALESCE(prsl.presellnum, 0) AS presell_num,
+			COALESCE(stk.num_stock, 0) + COALESCE(prsl.presellnum, 0) - COALESCE(stk.ord_booking, 0) - COALESCE(stk.ord_transfer, 0) - COALESCE(stk.inner_trans, 0) - COALESCE(stk.app_booking, 0) - COALESCE(stk.trans_out, 0) - COALESCE(stk.no_sale, 0) AS usable_stock
+		FROM
+			(
+				SELECT
+					sku_id,
+					dc_id,
+					sid,
+					SUM(num_stock) AS num_stock,
+					SUM(num_order_booking) AS ord_booking,
+					SUM(num_order_transfer) AS ord_transfer,
+					SUM(num_inner_trans) AS inner_trans,
+					SUM(num_app_booking) AS app_booking,
+					SUM(num_transfer_plan_out) AS trans_out,
+					SUM(num_nosale) AS no_sale
+				FROM
+					fdm.fdm_stock_id_glb_core_stocknum_chain
+				WHERE
+					dp = 'ACTIVE'
+					--AND sid IN(1, 2, 3, 4, 5, 6)
+					--AND dc_id IN(100, 101, 102, 103, 104, 107, 106, 200)
+				GROUP BY
+					sku_id,
+					dc_id,
+					sid
+			)
+			stk
+		LEFT JOIN
+			(
+				SELECT
+					sku_id,
+					sid,
+					dc_id,
+					(SUM(num_reserve) - SUM(num_arrival)) AS presellnum
+				FROM
+					fdm.fdm_stock_id_glb_stocknum_reserve_chain
+				WHERE
+					dp = 'ACTIVE'
+					--AND sid IN(1, 2, 3, 4, 5, 6)
+					--AND dc_id IN(100, 101, 102, 103, 104, 107, 106, 200)
+				GROUP BY
+					sku_id,
+					sid,
+					dc_id
+			)
+			prsl
+		ON
+			stk.sku_id = prsl.sku_id
+			AND stk.sid = prsl.sid
+			AND stk.dc_id = prsl.dc_id
+	)
+	stt ON ord.sku_id = stt.sku_id
+	AND ord.delv_center_id = stt.dc_id
+	AND ord.store_id = stt.sid
+LEFT JOIN
+	(
+		SELECT
+			id AS ord_id,
+			CASE
+				WHEN SUBSTR(sendpay, 261, 2) = 56
+					OR SUBSTR(sendpay, 262, 2) = 56
+				THEN "Yes"
+				ELSE "No"
+			END AS pre_order_tag
+		FROM
+			fdm.fdm_jdorder_en_orders_chain
+		WHERE
+			dp = 'ACTIVE'
+	) po ON po.ord_id=ord.ord_id 
