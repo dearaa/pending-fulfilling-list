@@ -1,0 +1,174 @@
+SELECT
+	skuda.vender_id,
+	skuda.vender_name,
+	skuda.item_id,
+	skuda.item_sku_id,
+	skuda.sku_name,
+	skuda.cat_lvl1_name_en,
+	skuda.cat_lvl2_name_en,
+	skuda.cat_lvl3_name_en,
+	skuda.sku_status,
+	stock.sid as store_id,
+	st.store_name,
+	stock.dc_id as delv_center_id,
+	st.delv_center_name,
+	SUM(NVL(stock.real_stock, 0)) AS real_stock,
+	SUM(NVL(stock.usable_order, 0)) AS usable_order,
+	SUM(NVL(stock.usable_presell, 0)) AS usable_presell
+FROM
+	(
+		SELECT
+			vender_id,
+			vender_name,
+			item_id,
+			item_sku_id,
+			sku_name,
+			item_first_cate_cd,
+			item_first_cate_name_en AS cat_lvl1_name_en,
+			item_second_cate_cd,
+			item_second_cate_name_en AS cat_lvl2_name_en,
+			item_third_cate_cd,
+			item_third_cate_name_en AS cat_lvl3_name_en,
+			item_shelf_life,
+			CASE
+				WHEN sku_status_cd = 0
+				THEN 'Off Shelf'
+				WHEN sku_status_cd = 1
+				THEN 'On Shelf'
+				WHEN sku_status_cd = 10
+				THEN 'Deleted'
+			END AS sku_status
+		FROM
+			gdm.gdm_m03_glb_item_sku_da
+		WHERE
+			dt = sysdate( - 1)
+			AND item_sku_id IN
+			(
+				SELECT DISTINCT
+					sku_id AS sku_id
+				FROM
+					gdm.gdm_ord_ord_det
+				WHERE
+					dt >= '2017-01-01'
+					AND ord_state = 1
+					AND ord_flow IN(4, 9)
+					AND
+					(
+						ord_type_cd = 0
+						OR best_combo_shop = 1
+					)
+					AND cat_lvl3_id NOT IN(75062092, 75061892, 75060931, 75061987, 75062181, 75063753, 75063774, 75062083)
+			)
+	)
+	skuda
+LEFT JOIN
+	(
+		SELECT
+			sttk.sku_id,
+			sttk.dc_id,
+			sttk.sid,
+			sttk.presale_status,
+			NVL(SUM(sttk.num_stock), 0) AS real_stock,
+			SUM(sttk.usable_stock) AS usable_order,
+			SUM(sttk.presellnum) AS usable_presell
+		FROM
+			(
+				SELECT
+					stk.sku_id,
+					stk.dc_id,
+					stk.sid,
+					stk.num_stock,
+					CASE
+						WHEN stk.num_stock > 0
+						THEN 'Not Started'
+						WHEN stk.num_stock > 0
+							AND prsl.presellnum > 0
+						THEN 'In Progress'
+						WHEN stk.num_stock <= 0
+							AND prsl.presellnum <= 0
+						THEN 'Over'
+					END AS presale_status,
+					stk.num_order_booking,
+					prsl.presellnum,
+					NVL(stk.num_stock, 0) + NVL(prsl.presellnum, 0) - NVL(stk.num_order_booking, 0) - NVL(stk.num_order_transfer, 0) - NVL(stk.num_inner_trans, 0) - NVL(stk.num_app_booking, 0) - NVL(stk.num_transfer_plan_out, 0) - NVL(stk.num_nosale, 0) AS usable_stock
+				FROM
+					(
+						SELECT
+							sku_id,
+							dc_id,
+							sid,
+							num_stock,
+							num_order_booking,
+							num_order_transfer,
+							num_inner_trans,
+							num_app_booking,
+							num_transfer_plan_out,
+							num_nosale
+						FROM
+							fdm.fdm_stock_id_glb_core_stocknum_chain
+						WHERE
+							dp = 'ACTIVE'
+							--AND sid IN(1, 2, 3, 4, 5, 6)
+							--AND dc_id IN(1, 3, 100, 200, 400, 101, 202, 106, 203, 108)
+					)
+					stk
+				LEFT JOIN
+					(
+						SELECT
+							sku_id,
+							sid,
+							dc_id,
+							(SUM(num_reserve) - SUM(num_arrival)) AS presellnum
+						FROM
+							fdm.fdm_stock_id_glb_stocknum_reserve_chain
+						WHERE
+							dp = 'ACTIVE'
+							--AND sid IN(1, 2, 3, 4, 5, 6)
+							--AND dc_id IN(1, 3, 100, 200, 400, 101, 202, 106, 203, 108)
+						GROUP BY
+							sku_id,
+							sid,
+							dc_id
+					)
+					prsl
+				ON
+					stk.sku_id = prsl.sku_id
+					AND stk.sid = prsl.sid
+					AND stk.dc_id = prsl.dc_id
+			)
+			sttk
+		GROUP BY
+			sttk.sku_id,
+			sttk.dc_id,
+			sttk.sid,
+			sttk.presale_status
+	)
+	stock ON stock.sku_id = skuda.item_sku_id
+LEFT OUTER JOIN
+	(
+		SELECT
+			store_id,
+			store_name,
+			delv_center_id,
+			delv_center_name
+		FROM
+			dim.dim_store_info
+	)
+	st
+ON
+	stock.sid = st.store_id
+	AND stock.dc_id = st.delv_center_id
+GROUP BY
+	skuda.vender_id,
+	skuda.vender_name,
+	skuda.item_id,
+	skuda.item_sku_id,
+	skuda.sku_name,
+	skuda.cat_lvl1_name_en,
+	skuda.cat_lvl2_name_en,
+	skuda.cat_lvl3_name_en,
+	skuda.sku_status,
+	stock.sid,
+	st.store_name,
+	stock.dc_id,
+	st.delv_center_name
